@@ -1,5 +1,6 @@
 from prompt_generator import *
 from data_utils import *
+import json
 
 
 
@@ -20,6 +21,69 @@ def build_memory_context(cases, rules):
             f"- Confidence: {rule.get('confidence', 0.0)}\n"
         )
     return "\n".join(chunks)
+
+def parse_confidence_from_syn_report(syn_report):
+    text = (syn_report or "").lower()
+    marker = "confidence:"
+    if marker not in text:
+        return 0.5
+    frag = text.split(marker, 1)[1].strip().splitlines()[0].strip()
+    try:
+        val = float(frag)
+    except Exception:
+        return 0.5
+    return max(0.0, min(1.0, val))
+
+def count_memory_citations(text):
+    t = (text or "").lower()
+    marker = "memory references:"
+    if marker not in t:
+        return 0
+    refs = t.split(marker, 1)[1].splitlines()[0].strip()
+    if refs in ["", "none", "n/a", "na"]:
+        return 0
+    parts = [p.strip() for p in refs.split(",") if p.strip()]
+    return len(parts)
+
+def parse_analysis_json(text):
+    raw = (text or "").strip()
+    try:
+        obj = json.loads(raw)
+        analysis = str(obj.get("analysis", "")).strip()
+        refs = obj.get("memory_references", [])
+        if not isinstance(refs, list):
+            refs = []
+        refs = [str(x).strip() for x in refs if str(x).strip()]
+        return analysis if analysis else raw, refs
+    except Exception:
+        return raw, []
+
+def memory_candidates_from_brief(memory_context):
+    refs = []
+    for line in (memory_context or "").splitlines():
+        s = line.strip()
+        if s.startswith("Case Memory ") and s.endswith(":"):
+            refs.append(s[:-1])
+        if s.startswith("Rule Memory ") and s.endswith(":"):
+            refs.append(s[:-1])
+    return refs
+
+def count_valid_refs(refs, candidates):
+    if not candidates:
+        return 0
+    cands = {c.lower() for c in candidates}
+    cnt = 0
+    for r in refs:
+        if str(r).strip().lower() in cands:
+            cnt += 1
+    return cnt
+
+def detect_conflict(question_analyses, option_analyses):
+    q_text = " ".join(question_analyses.values()).lower() if isinstance(question_analyses, dict) else ""
+    o_text = " ".join(option_analyses.values()).lower() if isinstance(option_analyses, dict) else ""
+    neg_markers = ["however", "but", "in contrast", "conflict", "disagree", "inconsistent"]
+    score = sum(1 for m in neg_markers if (m in q_text or m in o_text))
+    return score >= 2
 
 
 def fully_decode(qid, realqid, question, options, gold_answer, handler, args, dataobj, memory_context=""):
@@ -52,18 +116,73 @@ def fully_decode(qid, realqid, question, options, gold_answer, handler, args, da
 
         # get question analysis
         tmp_question_analysis = []
+        question_memory_citations = 0
+        question_valid_memory_citations = 0
+        memory_candidates = memory_candidates_from_brief(memory_context) if args.enable_inner_enhancement else []
         for _domain in question_domains:
-            question_analyzer, prompt_get_question_analysis = get_question_analysis_prompt(question, _domain)
+            question_analyzer, prompt_get_question_analysis = get_question_analysis_prompt(
+                question, _domain, memory_brief=memory_context if args.enable_inner_enhancement else ""
+            )
             raw_question_analysis = handler.get_output_multiagent(user_input=prompt_get_question_analysis, temperature=0, max_tokens=300, system_role=question_analyzer)
-            tmp_question_analysis.append(raw_question_analysis)
+            if args.enable_inner_enhancement:
+                parsed_analysis, refs = parse_analysis_json(raw_question_analysis)
+                if memory_candidates and len(refs) == 0:
+                    repair_prompt = (
+                        "Reformat the following analysis into strict JSON and add at least one relevant "
+                        "memory reference from the provided candidates when possible.\n\n"
+                        f"Candidates: {memory_candidates}\n"
+                        f"Analysis text:\n{raw_question_analysis}\n\n"
+                        "Output JSON only:\n"
+                        "{\"analysis\":\"...\", \"memory_references\":[\"Case Memory 1\"]}"
+                    )
+                    repaired = handler.get_output_multiagent(
+                        user_input=repair_prompt, temperature=0, max_tokens=220, system_role=""
+                    )
+                    repaired_analysis, repaired_refs = parse_analysis_json(repaired)
+                    if repaired_refs:
+                        parsed_analysis, refs = repaired_analysis, repaired_refs
+                question_memory_citations += len(refs)
+                question_valid_memory_citations += count_valid_refs(refs, memory_candidates)
+                tmp_question_analysis.append(parsed_analysis)
+            else:
+                question_memory_citations += count_memory_citations(raw_question_analysis)
+                tmp_question_analysis.append(raw_question_analysis)
         question_analyses = cleansing_analysis(tmp_question_analysis, question_domains, 'question')
 
         # get option analysis
         tmp_option_analysis = []
+        option_memory_citations = 0
+        option_valid_memory_citations = 0
+        memory_candidates = memory_candidates_from_brief(memory_context) if args.enable_inner_enhancement else []
         for _domain in options_domains:
-            option_analyzer, prompt_get_options_analyses = get_options_analysis_prompt(question, options, _domain, question_analyses)
+            option_analyzer, prompt_get_options_analyses = get_options_analysis_prompt(
+                question, options, _domain, question_analyses,
+                memory_brief=memory_context if args.enable_inner_enhancement else ""
+            )
             raw_option_analysis = handler.get_output_multiagent(user_input=prompt_get_options_analyses, temperature=0, max_tokens=300, system_role=option_analyzer)
-            tmp_option_analysis.append(raw_option_analysis)
+            if args.enable_inner_enhancement:
+                parsed_analysis, refs = parse_analysis_json(raw_option_analysis)
+                if memory_candidates and len(refs) == 0:
+                    repair_prompt = (
+                        "Reformat the following analysis into strict JSON and add at least one relevant "
+                        "memory reference from the provided candidates when possible.\n\n"
+                        f"Candidates: {memory_candidates}\n"
+                        f"Analysis text:\n{raw_option_analysis}\n\n"
+                        "Output JSON only:\n"
+                        "{\"analysis\":\"...\", \"memory_references\":[\"Case Memory 1\"]}"
+                    )
+                    repaired = handler.get_output_multiagent(
+                        user_input=repair_prompt, temperature=0, max_tokens=220, system_role=""
+                    )
+                    repaired_analysis, repaired_refs = parse_analysis_json(repaired)
+                    if repaired_refs:
+                        parsed_analysis, refs = repaired_analysis, repaired_refs
+                option_memory_citations += len(refs)
+                option_valid_memory_citations += count_valid_refs(refs, memory_candidates)
+                tmp_option_analysis.append(parsed_analysis)
+            else:
+                option_memory_citations += count_memory_citations(raw_option_analysis)
+                tmp_option_analysis.append(raw_option_analysis)
         option_analyses = cleansing_analysis(tmp_option_analysis, options_domains, 'option')
 
         if args.method == "anal_only":
@@ -74,7 +193,10 @@ def fully_decode(qid, realqid, question, options, gold_answer, handler, args, da
             # get synthesized report
             q_analyses_text = transform_dict2text(question_analyses, "question", question)
             o_analyses_text = transform_dict2text(option_analyses, "options", options)
-            synthesizer, prompt_get_synthesized_report = get_synthesized_report_prompt(q_analyses_text, o_analyses_text)
+            synthesizer, prompt_get_synthesized_report = get_synthesized_report_prompt(
+                q_analyses_text, o_analyses_text,
+                memory_brief=memory_context if args.enable_inner_enhancement else ""
+            )
             raw_synthesized_report = handler.get_output_multiagent(user_input=prompt_get_synthesized_report, temperature=0, max_tokens=2500, system_role=synthesizer)
             if "Total Analysis:" not in raw_synthesized_report and raw_synthesized_report != "ERROR.":
                 reformat_prompt = (
@@ -89,6 +211,8 @@ def fully_decode(qid, realqid, question, options, gold_answer, handler, args, da
                 if reformatted != "ERROR.":
                     raw_synthesized_report = reformatted
             syn_report = cleansing_syn_report(question, options, raw_synthesized_report)
+            conflict_detected = detect_conflict(question_analyses, option_analyses)
+            syn_confidence = parse_confidence_from_syn_report(raw_synthesized_report)
 
             if args.method == "syn_only":
                 # final answer derivation
@@ -123,6 +247,8 @@ def fully_decode(qid, realqid, question, options, gold_answer, handler, args, da
                             hasno_flag = True
                     if hasno_flag:
                         revision_prompt = get_revision_prompt(syn_report, revision_advice)
+                        if args.enable_inner_enhancement and (conflict_detected or syn_confidence < args.inner_low_confidence_threshold):
+                            revision_prompt += f"\n\nUse this memory brief to resolve conflict or low confidence:\n{memory_context}\n"
                         revised_analysis = handler.get_output_multiagent(user_input=revision_prompt, temperature=0, max_tokens=2500, system_role="")
                         syn_report = cleansing_syn_report(question, options, revised_analysis)
                         revision_history.append(revision_advice)
@@ -149,7 +275,13 @@ def fully_decode(qid, realqid, question, options, gold_answer, handler, args, da
         'vote_history': vote_history,
         'revision_history': revision_history,
         'syn_repo_history': syn_repo_history,
-        'raw_output': output
+        'raw_output': output,
+        'question_memory_citations': question_memory_citations if 'question_memory_citations' in locals() else 0,
+        'question_valid_memory_citations': question_valid_memory_citations if 'question_valid_memory_citations' in locals() else 0,
+        'option_memory_citations': option_memory_citations if 'option_memory_citations' in locals() else 0,
+        'option_valid_memory_citations': option_valid_memory_citations if 'option_valid_memory_citations' in locals() else 0,
+        'conflict_detected': conflict_detected if 'conflict_detected' in locals() else False,
+        'syn_confidence': syn_confidence if 'syn_confidence' in locals() else 0.5,
     }
     
     return data_info

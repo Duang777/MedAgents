@@ -14,12 +14,19 @@ def get_question_domains_prompt(question):
 
 
 
-def get_question_analysis_prompt(question, question_domain):
+def get_question_analysis_prompt(question, question_domain, memory_brief=""):
     question_analyzer = f"You are a medical expert in the domain of {question_domain}. " \
         f"From your area of specialization, you will scrutinize and diagnose the symptoms presented by patients in specific medical scenarios."
     prompt_get_question_analysis = f"Please meticulously examine the medical scenario outlined in this question: '''{question}'''." \
                         f"Drawing upon your medical expertise, interpret the condition being depicted. " \
                         f"Subsequently, identify and highlight the aspects of the issue that you find most alarming or noteworthy."
+    if memory_brief:
+        prompt_get_question_analysis += (
+            f"\n\nMemory Brief:\n{memory_brief}\n"
+            f"You must output strict JSON only with this schema:\n"
+            f"{{\"analysis\":\"...\", \"memory_references\":[\"Case Memory 1\", \"Rule Memory 2\"]}}\n"
+            f"If none are relevant, use an empty list for memory_references."
+        )
 
     return question_analyzer, prompt_get_question_analysis
 
@@ -34,7 +41,7 @@ def get_options_domains_prompt(question, options):
     return options_classifier, prompt_get_options_domain
 
 
-def get_options_analysis_prompt(question, options, op_domain, question_analysis):
+def get_options_analysis_prompt(question, options, op_domain, question_analysis, memory_brief=""):
     option_analyzer = f"You are a medical expert specialized in the {op_domain} domain. " \
                 f"You are adept at comprehending the nexus between questions and choices in multiple-choice exams and determining their validity. " \
                 f"Your task, in particular, is to analyze individual options with your expert medical knowledge and evaluate their relevancy and correctness."
@@ -47,6 +54,13 @@ def get_options_analysis_prompt(question, options, op_domain, question_analysis)
                     f"and scrutinize each option individually to assess whether it is plausible or should be eliminated based on reason and logic. "\
                     f"Pay close attention to discerning the disparities among the different options and rationalize their existence. " \
                     f"A handful of these options might seem right on the first glance but could potentially be misleading in reality."
+    if memory_brief:
+        prompt_get_options_analyses += (
+            f"\n\nMemory Brief:\n{memory_brief}\n"
+            f"You must output strict JSON only with this schema:\n"
+            f"{{\"analysis\":\"...\", \"memory_references\":[\"Case Memory 1\", \"Rule Memory 2\"]}}\n"
+            f"If memory is provided, include at least one relevant memory reference whenever possible."
+        )
     return option_analyzer, prompt_get_options_analyses
 
 
@@ -106,11 +120,12 @@ def get_cot_prompt(question, options):
     return prompt
 
 
-def get_synthesized_report_prompt(question_analyses, option_analyses):
+def get_synthesized_report_prompt(question_analyses, option_analyses, memory_brief=""):
     synthesizer = "You are a medical decision maker who excels at summarizing and synthesizing based on multiple experts from various domain experts."
 
     syn_report_format = f"Key Knowledge: [extracted key knowledge] \n" \
-                f"Total Analysis: [synthesized analysis] \n"
+                f"Total Analysis: [synthesized analysis] \n" \
+                f"Confidence: [a number between 0 and 1] \n"
     prompt = f"Here are some reports from different medical domain experts.\n "
     prompt += f"You need to complete the following steps:" \
                 f"1. Take careful and comprehensive consideration of the following reports." \
@@ -120,6 +135,8 @@ def get_synthesized_report_prompt(question_analyses, option_analyses):
                 f"You should output in exactly the same format as '''{syn_report_format}'''"
     prompt += question_analyses
     prompt += option_analyses
+    if memory_brief:
+        prompt += f"\nMemory Brief for conflict resolution and evidence support:\n{memory_brief}\n"
     
     return synthesizer, prompt
 

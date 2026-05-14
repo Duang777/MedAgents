@@ -36,6 +36,8 @@ if __name__ == '__main__':
     parser.add_argument('--rerank_w2', type=float, default=0.3)
     parser.add_argument('--rerank_w3', type=float, default=0.2)
     parser.add_argument('--reflection_confidence_threshold', type=float, default=0.9)
+    parser.add_argument('--enable_inner_enhancement', action='store_true')
+    parser.add_argument('--inner_low_confidence_threshold', type=float, default=0.6)
     args = parser.parse_args()
 
     print(args)
@@ -137,6 +139,16 @@ if __name__ == '__main__':
 
         data_info['memory_retrieved_count'] = len(retrieved_cases)
         data_info['rules_retrieved_count'] = len(retrieved_rules)
+        q_domains_n = len(data_info.get('question_domains', [])) if isinstance(data_info.get('question_domains', []), list) else 0
+        o_domains_n = len(data_info.get('option_domains', [])) if isinstance(data_info.get('option_domains', []), list) else 0
+        q_cites = int(data_info.get('question_memory_citations', 0))
+        q_valid_cites = int(data_info.get('question_valid_memory_citations', 0))
+        o_cites = int(data_info.get('option_memory_citations', 0))
+        o_valid_cites = int(data_info.get('option_valid_memory_citations', 0))
+        data_info['memory_citation_rate_question'] = (q_cites / q_domains_n) if q_domains_n else 0.0
+        data_info['memory_citation_rate_question_valid'] = (q_valid_cites / q_domains_n) if q_domains_n else 0.0
+        data_info['memory_citation_rate_option'] = (o_cites / o_domains_n) if o_domains_n else 0.0
+        data_info['memory_citation_rate_option_valid'] = (o_valid_cites / o_domains_n) if o_domains_n else 0.0
         data_info['memory_enabled'] = case_bank is not None
 
         record = json.dumps(data_info)

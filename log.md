@@ -161,3 +161,44 @@
   - `data_utils.py` 对 `Total Analysis:` 缺失增加了安全解析，避免中断。
 
 ---
+## 2026-05-14（补充：外层稳定快照与回退点）
+- 实验/改进项：创建“仅外层创新”稳定版本快照，供后续内层优化前回退
+- 做了什么：
+  - 撤销了本轮内层第一步尝试（专家显式引用相关改动），恢复到“未做内层优化”的代码状态。
+  - 提交外层稳定版本到 `idea1` 分支。
+  - 创建并推送可回退标签（annotated tag）。
+- 代码快照信息：
+  - commit: `571f774`
+  - branch: `idea1`
+  - tag: `idea1-outerloop-stable-20260514`
+- 快照内容范围：
+  - 包含：CaseBank / RuleBank / DualStageRetriever / EvolutionReflector（外层创新）
+  - 不包含：内层工作流优化（问题分域/专家显式引用/聚合器改造等）
+- 作用：
+  - 作为后续内层优化前的稳定基线，确保可一键回退与对照。
+
+---
+## 2026-05-14
+- 实验/改进项：内层全链路优化首版（分域/分析/综合/修订）
+- 做了什么：
+  - `prompt_generator.py`：
+    - 问题分析/选项分析 prompt 新增 `memory_brief` 注入位。
+    - 综合报告 prompt 增加 `Confidence` 字段输出要求。
+  - `utils.py`：
+    - 新增记忆引用计数、冲突检测、综合置信度解析。
+    - 在 `enable_inner_enhancement` 下将记忆简报注入专家分析与综合阶段。
+    - 在“冲突或低置信”时向修订提示补充记忆简报，执行记忆引导修订。
+    - 输出新增指标：`memory_citation_rate_question`、`memory_citation_rate_option`、`conflict_detected`、`syn_confidence`。
+  - `run.py`：
+    - 新增参数：`--enable_inner_enhancement`、`--inner_low_confidence_threshold`。
+    - 聚合并写入记忆引用率指标。
+- 结果（冒烟，MedQA 0-5，memory+reflection+inner 开启）：
+  - n=5，accuracy=0.60
+  - 平均病例命中=0.00，平均规则命中=0.00
+  - 平均问题引用率=0.00，平均选项引用率=0.00
+  - 冲突触发次数=0，低置信次数=2
+- 备注：
+  - 本轮受网关连接重置与DNS波动影响显著，embedding与chat均出现多次重试失败。
+  - 冷启动命中不足导致“记忆注入与引用”未被有效触发；需在有预热库条件下再次验证内层效果。
+
+---
