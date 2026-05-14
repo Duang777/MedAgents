@@ -3,7 +3,21 @@ from data_utils import *
 
 
 
-def fully_decode(qid, realqid, question, options, gold_answer, handler, args, dataobj):
+def _build_memory_context(memories):
+    chunks = []
+    for idx, case in enumerate(memories):
+        reflection = case.get('reflection', '')
+        strategy = reflection if reflection else case.get('reasoning_trace', '')
+        chunks.append(
+            f"Memory {idx + 1}:\n"
+            f"- Past Question: {case.get('question', '')}\n"
+            f"- Reusable Strategy: {strategy}\n"
+            f"- Outcome: {'success' if case.get('success') else 'failure'}\n"
+        )
+    return "\n".join(chunks)
+
+
+def fully_decode(qid, realqid, question, options, gold_answer, handler, args, dataobj, memory_context=""):
 
     question_domains, options_domains, question_analyses, option_analyses, syn_report, output = "", "", "", "", "", ""
     vote_history, revision_history, syn_repo_history = [], [], []
@@ -61,7 +75,7 @@ def fully_decode(qid, realqid, question, options, gold_answer, handler, args, da
 
             if args.method == "syn_only":
                 # final answer derivation
-                answer_prompt = get_final_answer_prompt_wsyn(syn_report)
+                answer_prompt = get_final_answer_prompt_wsyn(syn_report, memory_context=memory_context)
                 output = handler.get_output_multiagent(user_input=answer_prompt, temperature=0, max_tokens=2500, system_role="")
                 ans, output = cleansing_final_output(output)
             elif args.method == "syn_verif":
@@ -99,7 +113,7 @@ def fully_decode(qid, realqid, question, options, gold_answer, handler, args, da
                     vote_history.append(domain_opinions)
                 
                 # final answer derivation
-                answer_prompt = get_final_answer_prompt_wsyn(syn_report)
+                answer_prompt = get_final_answer_prompt_wsyn(syn_report, memory_context=memory_context)
                 output = handler.get_output_multiagent(user_input=answer_prompt, temperature=0, max_tokens=2500, system_role="")
                 ans, output = cleansing_final_output(output)
                         
@@ -122,4 +136,3 @@ def fully_decode(qid, realqid, question, options, gold_answer, handler, args, da
     }
     
     return data_info
-

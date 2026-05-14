@@ -75,8 +75,12 @@ def get_final_answer_prompt_analonly(question, options, question_analyses, optio
 
     return prompt
 
-def get_final_answer_prompt_wsyn(syn_report):
-    prompt = f"Here is a synthesized report: {syn_report} \n" \
+def get_final_answer_prompt_wsyn(syn_report, memory_context=""):
+    memory_text = ""
+    if memory_context:
+        memory_text = f"Relevant past clinical memories:\n{memory_context}\n\n"
+
+    prompt = f"{memory_text}Here is a synthesized report: {syn_report} \n" \
         f"Based on the above report, select the optimal choice to answer the question. \n" \
         f"Points to note: \n" \
         f"1. The analyses provided should guide you towards the correct response. \n" \

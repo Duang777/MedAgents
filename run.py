@@ -5,6 +5,8 @@ import argparse
 import tqdm
 import json
 from utils import *
+from memory_bank import CaseBank
+from reflection_agent import ReflectionAgent
 
 
 if __name__ == '__main__':
@@ -18,6 +20,11 @@ if __name__ == '__main__':
 
     parser.add_argument('--method', type=str, default='syn_verif', choices=['syn_verif', 'syn_only', 'anal_only', 'base_direct', 'base_cot'])
     parser.add_argument('--max_attempt_vote', type=int, default=3)
+    parser.add_argument('--enable_memory', action='store_true')
+    parser.add_argument('--memory_path', default='./memory/case_bank.json')
+    parser.add_argument('--memory_top_k', type=int, default=3)
+    parser.add_argument('--memory_max_size', type=int, default=500)
+    parser.add_argument('--enable_reflection', action='store_true')
     args = parser.parse_args()
 
     print(args)
@@ -30,6 +37,13 @@ if __name__ == '__main__':
 
     ### get dataobj
     dataobj = MyDataset('test', args, traindata_obj=None)
+
+    case_bank = None
+    reflector = None
+    if args.enable_memory:
+        case_bank = CaseBank(storage_path=args.memory_path, max_size=args.memory_max_size)
+    if args.enable_memory and args.enable_reflection:
+        reflector = ReflectionAgent(handler)
 
     ### set test range
     end_pos = len(dataobj) if args.end_pos == -1 else args.end_pos
@@ -44,21 +58,49 @@ if __name__ == '__main__':
     for idx in tqdm.tqdm(test_range, desc=f"{args.start_pos} ~ {end_pos}"):
         raw_sample = dataobj.get_by_idx(idx)
         question = raw_sample['question'] if raw_sample['question'][-1] in punctuation else raw_sample['question'] + '?'
+        memory_context = ""
+        retrieved_memories = []
+        if case_bank is not None:
+            retrieved_memories = case_bank.retrieve(question, k=args.memory_top_k)
+            memory_context = _build_memory_context(retrieved_memories)
         
         realqid = idx
         if args.dataset_name in ['MedQA', 'MedMCQA'] or 'MMLU' in args.dataset_name:
             options = raw_sample['options']
             gold_answer = raw_sample['answer_idx']
-            data_info = fully_decode(idx, realqid, question, options, gold_answer, handler, args, dataobj)
+            data_info = fully_decode(idx, realqid, question, options, gold_answer, handler, args, dataobj, memory_context=memory_context)
         elif args.dataset_name == 'PubMedQA':
             question = raw_sample['context'] + ' ' + question
             options = raw_sample['options']
             gold_answer = raw_sample['answer_idx']
-            data_info = fully_decode(idx, realqid, question, options, gold_answer, handler, args, dataobj)
+            data_info = fully_decode(idx, realqid, question, options, gold_answer, handler, args, dataobj, memory_context=memory_context)
         elif args.dataset_name in ['MedicationQA']:
             options = ''
             gold_answer = raw_sample['answer_idx']
-            data_info = fully_decode(idx, realqid, question, options, gold_answer, handler, args, dataobj)
+            data_info = fully_decode(idx, realqid, question, options, gold_answer, handler, args, dataobj, memory_context=memory_context)
+
+        if case_bank is not None:
+            success = data_info['pred_answer'] == gold_answer
+            reflection = None
+            if reflector is not None:
+                reflection = reflector.reflect(
+                    question=question,
+                    reasoning_trace=data_info.get('syn_report', ''),
+                    outcome='success' if success else 'failure',
+                )
+            case_bank.add_case(
+                question=question,
+                options=options,
+                pred_answer=data_info['pred_answer'],
+                gold_answer=gold_answer,
+                syn_report=data_info.get('syn_report', ''),
+                reasoning_trace=data_info.get('raw_output', ''),
+                reflection=reflection,
+                success=success,
+            )
+
+        data_info['memory_retrieved_count'] = len(retrieved_memories)
+        data_info['memory_enabled'] = case_bank is not None
 
         record = json.dumps(data_info)
         with open(exact_output_file, 'a') as f:
