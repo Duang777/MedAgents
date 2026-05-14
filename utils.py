@@ -3,16 +3,21 @@ from data_utils import *
 
 
 
-def _build_memory_context(memories):
+def build_memory_context(cases, rules):
     chunks = []
-    for idx, case in enumerate(memories):
-        reflection = case.get('reflection', '')
-        strategy = reflection if reflection else case.get('reasoning_trace', '')
+    for idx, case in enumerate(cases):
+        strategy = case.get('syn_report', '') or case.get('reasoning_trace', '')
         chunks.append(
-            f"Memory {idx + 1}:\n"
+            f"Case Memory {idx + 1}:\n"
             f"- Past Question: {case.get('question', '')}\n"
             f"- Reusable Strategy: {strategy}\n"
             f"- Outcome: {'success' if case.get('success') else 'failure'}\n"
+        )
+    for idx, rule in enumerate(rules):
+        chunks.append(
+            f"Rule Memory {idx + 1}:\n"
+            f"- Rule: {rule.get('rule_text', '')}\n"
+            f"- Confidence: {rule.get('confidence', 0.0)}\n"
         )
     return "\n".join(chunks)
 
@@ -71,6 +76,18 @@ def fully_decode(qid, realqid, question, options, gold_answer, handler, args, da
             o_analyses_text = transform_dict2text(option_analyses, "options", options)
             synthesizer, prompt_get_synthesized_report = get_synthesized_report_prompt(q_analyses_text, o_analyses_text)
             raw_synthesized_report = handler.get_output_multiagent(user_input=prompt_get_synthesized_report, temperature=0, max_tokens=2500, system_role=synthesizer)
+            if "Total Analysis:" not in raw_synthesized_report and raw_synthesized_report != "ERROR.":
+                reformat_prompt = (
+                    "Reformat the following text into exactly this format:\n"
+                    "Key Knowledge: [extracted key knowledge]\n"
+                    "Total Analysis: [synthesized analysis]\n\n"
+                    f"Text:\n{raw_synthesized_report}"
+                )
+                reformatted = handler.get_output_multiagent(
+                    user_input=reformat_prompt, temperature=0, max_tokens=800, system_role=""
+                )
+                if reformatted != "ERROR.":
+                    raw_synthesized_report = reformatted
             syn_report = cleansing_syn_report(question, options, raw_synthesized_report)
 
             if args.method == "syn_only":

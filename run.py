@@ -6,7 +6,9 @@ import tqdm
 import json
 from utils import *
 from memory_bank import CaseBank
-from reflection_agent import ReflectionAgent
+from rule_bank import RuleBank
+from reflection_agent import EvolutionReflector
+from dual_stage_retriever import DualStageRetriever
 
 
 if __name__ == '__main__':
@@ -22,28 +24,51 @@ if __name__ == '__main__':
     parser.add_argument('--max_attempt_vote', type=int, default=3)
     parser.add_argument('--enable_memory', action='store_true')
     parser.add_argument('--memory_path', default='./memory/case_bank.json')
+    parser.add_argument('--rule_path', default='./memory/rule_bank.json')
     parser.add_argument('--memory_top_k', type=int, default=3)
+    parser.add_argument('--rule_top_k', type=int, default=2)
     parser.add_argument('--memory_max_size', type=int, default=500)
+    parser.add_argument('--rule_max_size', type=int, default=500)
     parser.add_argument('--enable_reflection', action='store_true')
+    parser.add_argument('--familiarity_top_m', type=int, default=15)
+    parser.add_argument('--familiarity_threshold', type=float, default=0.6)
+    parser.add_argument('--rerank_w1', type=float, default=0.5)
+    parser.add_argument('--rerank_w2', type=float, default=0.3)
+    parser.add_argument('--rerank_w3', type=float, default=0.2)
+    parser.add_argument('--reflection_confidence_threshold', type=float, default=0.9)
     args = parser.parse_args()
 
     print(args)
 
     ### get handler
-    if args.model_name in ['instructgpt', 'newinstructgpt', 'chatgpt', 'gpt4']: # select the model
-        handler = api_handler(args.model_name)
-    else:
-        raise ValueError
+    handler = api_handler(args.model_name)
 
     ### get dataobj
     dataobj = MyDataset('test', args, traindata_obj=None)
 
     case_bank = None
+    rule_bank = None
     reflector = None
+    retriever = None
     if args.enable_memory:
         case_bank = CaseBank(storage_path=args.memory_path, max_size=args.memory_max_size)
+        rule_bank = RuleBank(storage_path=args.rule_path, max_size=args.rule_max_size)
+        retriever = DualStageRetriever(
+            case_bank=case_bank,
+            rule_bank=rule_bank,
+            api_handler=handler,
+            familiarity_top_m=args.familiarity_top_m,
+            familiarity_threshold=args.familiarity_threshold,
+            w1=args.rerank_w1,
+            w2=args.rerank_w2,
+            w3=args.rerank_w3,
+        )
     if args.enable_memory and args.enable_reflection:
-        reflector = ReflectionAgent(handler)
+        reflector = EvolutionReflector(
+            handler=handler,
+            rule_bank=rule_bank,
+            confidence_threshold=args.reflection_confidence_threshold,
+        )
 
     ### set test range
     end_pos = len(dataobj) if args.end_pos == -1 else args.end_pos
@@ -59,10 +84,12 @@ if __name__ == '__main__':
         raw_sample = dataobj.get_by_idx(idx)
         question = raw_sample['question'] if raw_sample['question'][-1] in punctuation else raw_sample['question'] + '?'
         memory_context = ""
-        retrieved_memories = []
-        if case_bank is not None:
-            retrieved_memories = case_bank.retrieve(question, k=args.memory_top_k)
-            memory_context = _build_memory_context(retrieved_memories)
+        retrieved_cases = []
+        retrieved_rules = []
+        if retriever is not None:
+            retrieved_cases = retriever.retrieve_cases(question, top_k=args.memory_top_k)
+            retrieved_rules = retriever.retrieve_rules(question, top_kr=args.rule_top_k)
+            memory_context = build_memory_context(retrieved_cases, retrieved_rules)
         
         realqid = idx
         if args.dataset_name in ['MedQA', 'MedMCQA'] or 'MMLU' in args.dataset_name:
@@ -81,25 +108,35 @@ if __name__ == '__main__':
 
         if case_bank is not None:
             success = data_info['pred_answer'] == gold_answer
-            reflection = None
+            confidence = 1.0 if success else 0.0
+
+            question_embedding = handler.get_embedding(question)
+            if question_embedding:
+                case_bank.add_case(
+                    question=question,
+                    options=options,
+                    pred_answer=data_info['pred_answer'],
+                    gold_answer=gold_answer,
+                    syn_report=data_info.get('syn_report', ''),
+                    reasoning_trace=data_info.get('raw_output', ''),
+                    success=success,
+                    confidence=confidence,
+                    embedding=question_embedding,
+                )
+
+            new_rules = []
             if reflector is not None:
-                reflection = reflector.reflect(
+                new_rules = reflector.reflect_and_update(
                     question=question,
                     reasoning_trace=data_info.get('syn_report', ''),
-                    outcome='success' if success else 'failure',
+                    gold_answer=gold_answer,
+                    pred_answer=data_info['pred_answer'],
+                    confidence=confidence,
                 )
-            case_bank.add_case(
-                question=question,
-                options=options,
-                pred_answer=data_info['pred_answer'],
-                gold_answer=gold_answer,
-                syn_report=data_info.get('syn_report', ''),
-                reasoning_trace=data_info.get('raw_output', ''),
-                reflection=reflection,
-                success=success,
-            )
+            data_info['new_rules_count'] = len(new_rules)
 
-        data_info['memory_retrieved_count'] = len(retrieved_memories)
+        data_info['memory_retrieved_count'] = len(retrieved_cases)
+        data_info['rules_retrieved_count'] = len(retrieved_rules)
         data_info['memory_enabled'] = case_bank is not None
 
         record = json.dumps(data_info)

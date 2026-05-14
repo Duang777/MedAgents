@@ -47,3 +47,117 @@
   - 严格按规则未加入广义兜底逻辑，仅保留必要失败分支。
 
 ---
+## 2026-05-14
+- 实验/改进项：API 配置升级为环境变量驱动，并接入 dmxapi 指定模型
+- 做了什么：
+  - 修改 `api_utils.py`，移除代码内写死的 `api_base/api_version/api_key`。
+  - 改为从环境变量读取：`OPENAI_API_TYPE`、`OPENAI_API_BASE`、`OPENAI_API_VERSION`、`OPENAI_API_KEY`。
+  - 增加 OpenAI-compatible 路由（非 Azure 时走 `model=`，Azure 时走 `engine=`）。
+  - 增加模型别名支持：`deepseek-v4-pro-guan`。
+  - 未在代码和日志中写入明文 key。
+- 结果：
+  - 配置方式已升级，可直接切换到 dmxapi 与指定模型运行。
+  - `api_utils.py` 已通过语法编译校验。
+- 备注：
+  - 当前项目依赖 `openai==0.27.4`（旧 SDK），本次保持兼容，仅做配置层升级。
+
+---
+## 2026-05-14
+- 实验/改进项：idea1 三组冒烟对照实验（deepseek-v4-pro-guan, MedQA 0-3）
+- 做了什么：
+  - 新建实验虚拟环境 `.venvexp` 并安装运行依赖。
+  - 配置 dmxapi 环境变量后，运行三组对照：
+    - baseline（无记忆）
+    - memory（记忆检索）
+    - memory+reflection（记忆检索+反思）
+  - 过程中修复两处阻塞问题：
+    - `run.py` 模型白名单限制导致新模型被拒绝，改为允许任意 `model_name`。
+    - `utils.py` 的记忆上下文函数命名导致 `NameError`，改为可导入函数名。
+  - 另对综合报告格式做了定向兼容：当模型未输出 `Total Analysis:` 时，追加一次“仅重排格式”请求再解析。
+- 结果：
+  - baseline: 3/3 = 1.000
+  - memory: 2/3 = 0.667
+  - memory+reflection: 3/3 = 1.000
+  - 三组均已端到端跑通，记忆检索字段写入输出成功。
+- 备注：
+  - 该轮为冒烟样本（n=3），只用于验证流程与稳定性，不用于最终结论。
+  - memory 组出现一次 API 超时重试，最终完成。
+
+---
+## 2026-05-14
+- 实验/改进项：idea1 升级实现（真实 embedding + 双阶段检索 + 反思进化）
+- 做了什么：
+  - 更新 `idea1.md` 为升级版方案文档（去图结构，聚焦反思+双阶段检索）。
+  - 新增 `rule_bank.py`（规则库存储与剪枝）。
+  - 新增 `dual_stage_retriever.py`（熟悉度召回 + 回忆重排 + 规则检索）。
+  - 升级 `api_utils.py`：新增 embedding API 调用，默认 `text-embedding-3-large`（环境变量可配置）。
+  - 重写 `memory_bank.py`：病例存储改为真实 embedding 与实体字段。
+  - 重写 `reflection_agent.py`：升级为 `EvolutionReflector`（质量门控 + JSON 规则提炼 + 写 RuleBank）。
+  - 修改 `run.py`：接入 CaseBank + RuleBank + DualStageRetriever + EvolutionReflector，并新增相关参数。
+  - 修改 `utils.py`：记忆注入升级为“病例记忆 + 规则记忆”双通道。
+- 结果：
+  - Embedding 连通性验证通过：`text-embedding-3-large` 返回向量长度 3072。
+  - 升级版端到端冒烟跑通（MedQA 2题，memory+reflection开启）。
+  - 当前冷启动结果：CaseBank 已写入 2 条，RuleBank 未触发（规则数 0）。
+- 备注：
+  - 冷启动前几题检索命中为 0 属正常现象；需先积累足量成功病例再体现双阶段检索收益。
+  - 规则提炼受“正确性+置信度阈值”控制，小样本下可能不触发。
+
+---
+## 2026-05-14
+- 实验/改进项：外层方案正式小样本对照（MedQA n=50）
+- 做了什么：
+  - 在同一模型与同一配置下完成三组对照：
+    - baseline（无记忆）
+    - memory（双阶段病例检索）
+    - memory+reflection（双阶段检索 + 反思规则库）
+  - 使用 `text-embedding-3-large` 作为统一嵌入模型。
+- 结果：
+  - baseline: 44/50 = 0.88
+  - memory: 44/50 = 0.88
+  - memory+reflection: 46/50 = 0.92
+  - memory 组平均病例检索命中：0.18 条/题
+  - memory+reflection 组平均规则检索命中：0.96 条/题
+  - memory+reflection 组新增规则：8 条（RuleBank 总数 8）
+- 备注：
+  - 本轮提升主要来自“反思规则库”引入后的规则注入，而非病例检索命中提升。
+  - 样本量为 50，结论为阶段性结果；建议下一步扩展至 n=200 做稳定性验证。
+
+---
+## 2026-05-14（补充：可复现实验记录）
+- 实验名称：idea1 外层方案对照（MedQA 前50题）
+- 代码分支：`idea1`
+- 模型：`deepseek-v4-pro-guan`
+- 网关：`https://www.dmxapi.cn/v1`
+- 嵌入模型：`text-embedding-3-large`
+- 数据范围：`start_pos=0, end_pos=50`
+- 统一推理配置：`method=syn_verif`, `max_attempt_vote=1`
+
+- 组别配置：
+  - baseline：不启用记忆
+  - memory：`--enable_memory`，`memory_top_k=3`，`rule_top_k=2`，`familiarity_top_m=15`，`familiarity_threshold=0.6`
+  - memory+reflection：在 memory 基础上增加 `--enable_reflection`，`reflection_confidence_threshold=0.9`
+
+- 结果汇总：
+  - baseline：44/50，accuracy=0.88
+  - memory：44/50，accuracy=0.88
+  - memory+reflection：46/50，accuracy=0.92
+
+- 过程指标：
+  - memory 平均病例命中：0.18 条/题
+  - memory+reflection 平均规则命中：0.96 条/题
+  - memory+reflection 新增规则：8 条
+
+- 产物路径：
+  - baseline 输出：`outputs/idea1_eval50/baseline/deepseek-v4-pro-guan-syn_verif`
+  - memory 输出：`outputs/idea1_eval50/memory/deepseek-v4-pro-guan-syn_verif`
+  - memory+reflection 输出：`outputs/idea1_eval50/memory_reflect/deepseek-v4-pro-guan-syn_verif`
+  - case bank（memory）：`memory/idea1_eval50_case_bank.json`
+  - case bank（memory+reflection）：`memory/idea1_eval50_case_bank_reflect.json`
+  - rule bank（memory+reflection）：`memory/idea1_eval50_rule_bank_reflect.json`
+
+- 稳定性说明：
+  - 运行过程中曾出现网关 DNS/超时波动；已通过重试与解析保护确保实验可继续。
+  - `data_utils.py` 对 `Total Analysis:` 缺失增加了安全解析，避免中断。
+
+---

@@ -1,31 +1,47 @@
 import openai
 import time
 import random
+import os
 from wrapt_timeout_decorator import timeout
 
-openai.api_type = "azure"
-openai.api_base = ""
-openai.api_version = ""
-openai.api_key = ""
+OPENAI_API_TYPE = os.getenv("OPENAI_API_TYPE", "openai").lower()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "")
+OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "")
+OPENAI_EMBEDDING_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large")
+
+openai.api_key = OPENAI_API_KEY
+if OPENAI_API_BASE:
+    openai.api_base = OPENAI_API_BASE
+if OPENAI_API_TYPE == "azure":
+    openai.api_type = "azure"
+    if OPENAI_API_VERSION:
+        openai.api_version = OPENAI_API_VERSION
+else:
+    openai.api_type = "open_ai"
 
 
 @timeout(200) # 200 seconds timeout
 def generate_response_multiagent(engine, temperature, max_tokens, frequency_penalty, presence_penalty, stop, system_role, user_input):
     print("Generating response for engine: ", engine)
     start_time = time.time()
-    response = openai.ChatCompletion.create(
-                    engine=engine, # engine is the name of the deployment
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    top_p=1, # top_p的意思是选择概率质量值之和达到top_p的概率分布采样结果
-                    frequency_penalty=frequency_penalty,
-                    presence_penalty=presence_penalty,
-                    stop=stop,
-                    messages=[  
-                        {"role": "system", "content": system_role},
-                        {"role": "user", "content": user_input}
-                    ],
-                )
+    payload = {
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "top_p": 1,
+        "frequency_penalty": frequency_penalty,
+        "presence_penalty": presence_penalty,
+        "stop": stop,
+        "messages": [
+            {"role": "system", "content": system_role},
+            {"role": "user", "content": user_input}
+        ],
+    }
+    if OPENAI_API_TYPE == "azure":
+        payload["engine"] = engine
+    else:
+        payload["model"] = engine
+    response = openai.ChatCompletion.create(**payload)
     end_time = time.time()
     print('Finish!')
     print("Time taken: ", end_time - start_time)
@@ -36,16 +52,20 @@ def generate_response_multiagent(engine, temperature, max_tokens, frequency_pena
 def generate_response(engine, temperature, max_tokens, frequency_penalty, presence_penalty, stop, input_text):
     print("Generating response for engine: ", engine)
     start_time = time.time()
-    response = openai.ChatCompletion.create(
-                    engine=engine, # engine is the name of the deployment
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    top_p=1, # top_p的意思是选择概率质量值之和达到top_p的概率分布采样结果
-                    frequency_penalty=frequency_penalty,
-                    presence_penalty=presence_penalty,
-                    stop=stop,
-                    messages=[{"role": "user", "content": input_text}],
-                )
+    payload = {
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "top_p": 1,
+        "frequency_penalty": frequency_penalty,
+        "presence_penalty": presence_penalty,
+        "stop": stop,
+        "messages": [{"role": "user", "content": input_text}],
+    }
+    if OPENAI_API_TYPE == "azure":
+        payload["engine"] = engine
+    else:
+        payload["model"] = engine
+    response = openai.ChatCompletion.create(**payload)
     end_time = time.time()
     print('Finish!')
     print("Time taken: ", end_time - start_time)
@@ -99,8 +119,10 @@ class api_handler:
             self.engine = 'gpt-35-turbo-16k'
         elif self.model == 'gpt4':
             self.engine = 'gpt-4'
+        elif self.model == 'deepseek-v4-pro-guan':
+            self.engine = 'deepseek-v4-pro-guan'
         else:
-            raise NotImplementedError
+            self.engine = self.model
 
     def get_output_multiagent(self, system_role, user_input, max_tokens, temperature=0,
                     frequency_penalty=0, presence_penalty=0, stop=None):
@@ -116,6 +138,26 @@ class api_handler:
                 print(f'Attempt {attempt+1} of {max_attempts} failed with error: {error}')
                 if attempt == max_attempts - 1:
                     return "ERROR."
+
+    def get_embedding(self, text):
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                if OPENAI_API_TYPE == "azure":
+                    response = openai.Embedding.create(
+                        engine=OPENAI_EMBEDDING_MODEL,
+                        input=text,
+                    )
+                else:
+                    response = openai.Embedding.create(
+                        model=OPENAI_EMBEDDING_MODEL,
+                        input=text,
+                    )
+                return response["data"][0]["embedding"]
+            except (TimeoutError, openai.error.Timeout, Exception) as error:
+                print(f'Embedding attempt {attempt+1} of {max_attempts} failed with error: {error}')
+                if attempt == max_attempts - 1:
+                    return []
 
 
     def get_output(self, input_text, max_tokens, temperature=0,

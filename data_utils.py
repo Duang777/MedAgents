@@ -149,10 +149,17 @@ def cleansing_analysis(analyses, domains, type):
 
 
 def cleansing_syn_report(question, options, raw_synthesized_report):
+    text = (raw_synthesized_report or "").strip()
+    if "Total Analysis:" not in text:
+        total_analysis_text = text if text else "No synthesized analysis available."
+        final_syn_repo = f"Question: {question} \n" \
+            f"Options: {options} \n" \
+            f"Total Analysis: {total_analysis_text} \n"
+        return final_syn_repo
 
-    tmp = raw_synthesized_report.split("Total Analysis:")
+    tmp = text.split("Total Analysis:", 1)
     total_analysis_text = tmp[1].strip()
-    if "Key Knowledge" in tmp:
+    if "Key Knowledge:" in tmp[0]:
         key_knowledge_text = tmp[0].split("Key Knowledge:")[-1].strip()
         final_syn_repo = f"Question: {question} \n" \
             f"Options: {options} \n" \
