@@ -38,6 +38,8 @@ if __name__ == '__main__':
     parser.add_argument('--reflection_confidence_threshold', type=float, default=0.9)
     parser.add_argument('--enable_inner_enhancement', action='store_true')
     parser.add_argument('--inner_low_confidence_threshold', type=float, default=0.6)
+    parser.add_argument('--enable_arbitration', action='store_true')
+    parser.add_argument('--arbitration_confidence_threshold', type=float, default=0.7)
     args = parser.parse_args()
 
     print(args)
@@ -149,6 +151,22 @@ if __name__ == '__main__':
         data_info['memory_citation_rate_question_valid'] = (q_valid_cites / q_domains_n) if q_domains_n else 0.0
         data_info['memory_citation_rate_option'] = (o_cites / o_domains_n) if o_domains_n else 0.0
         data_info['memory_citation_rate_option_valid'] = (o_valid_cites / o_domains_n) if o_domains_n else 0.0
+        # memory attribution summary
+        supporting_memories = []
+        for i, c in enumerate(retrieved_cases):
+            supporting_memories.append({
+                "type": "case",
+                "id": c.get("id", ""),
+                "label": f"Case Memory {i+1}",
+            })
+        for i, r in enumerate(retrieved_rules):
+            supporting_memories.append({
+                "type": "rule",
+                "id": r.get("id", ""),
+                "label": f"Rule Memory {i+1}",
+            })
+        data_info['supporting_memories'] = supporting_memories
+        data_info['final_confidence'] = float(data_info.get('arbiter_confidence', 0.0)) if data_info.get('arbiter_used') else float(data_info.get('syn_confidence', 0.5))
         data_info['memory_enabled'] = case_bank is not None
 
         record = json.dumps(data_info)

@@ -85,6 +85,21 @@ def detect_conflict(question_analyses, option_analyses):
     score = sum(1 for m in neg_markers if (m in q_text or m in o_text))
     return score >= 2
 
+def parse_arbiter_json(text):
+    raw = (text or "").strip()
+    try:
+        obj = json.loads(raw)
+        ans = str(obj.get("arbiter_answer", "")).strip().upper()
+        reasoning = str(obj.get("arbiter_reasoning", "")).strip()
+        used = obj.get("used_memories", [])
+        conf = float(obj.get("arbiter_confidence", 0.0))
+        if not isinstance(used, list):
+            used = []
+        used = [str(x).strip() for x in used if str(x).strip()]
+        return ans, reasoning, used, max(0.0, min(1.0, conf))
+    except Exception:
+        return "", "", [], 0.0
+
 
 def fully_decode(qid, realqid, question, options, gold_answer, handler, args, dataobj, memory_context=""):
 
@@ -254,11 +269,39 @@ def fully_decode(qid, realqid, question, options, gold_answer, handler, args, da
                         revision_history.append(revision_advice)
                         syn_repo_history.append(syn_report)
                     vote_history.append(domain_opinions)
-                
-                # final answer derivation
-                answer_prompt = get_final_answer_prompt_wsyn(syn_report, memory_context=memory_context)
-                output = handler.get_output_multiagent(user_input=answer_prompt, temperature=0, max_tokens=2500, system_role="")
-                ans, output = cleansing_final_output(output)
+                arbiter_used = False
+                arbiter_memories = []
+                arbiter_confidence = 0.0
+                # arbitration for low-confidence or conflict cases
+                if args.enable_arbitration and (conflict_detected or syn_confidence < args.arbitration_confidence_threshold):
+                    arbiter_prompt = (
+                        "You are an arbitration expert in a multi-expert clinical consultation.\n"
+                        f"Question:\n{question}\n\n"
+                        f"Options:\n{options}\n\n"
+                        f"Synthesized report:\n{syn_report}\n\n"
+                        f"Memory brief:\n{memory_context}\n\n"
+                        "Output strict JSON only:\n"
+                        "{\"arbiter_answer\":\"A|B|C|D|E\", "
+                        "\"arbiter_reasoning\":\"...\", "
+                        "\"used_memories\":[\"Case Memory 1\", \"Rule Memory 1\"], "
+                        "\"arbiter_confidence\":0.0}"
+                    )
+                    arbiter_raw = handler.get_output_multiagent(
+                        user_input=arbiter_prompt, temperature=0, max_tokens=500, system_role=""
+                    )
+                    a_ans, a_reasoning, a_memories, a_conf = parse_arbiter_json(arbiter_raw)
+                    if a_ans in ["A", "B", "C", "D", "E"]:
+                        ans = a_ans
+                        output = f"ArbiterReasoning: {a_reasoning}"
+                        arbiter_used = True
+                        arbiter_memories = a_memories
+                        arbiter_confidence = a_conf
+
+                if not arbiter_used:
+                    # final answer derivation
+                    answer_prompt = get_final_answer_prompt_wsyn(syn_report, memory_context=memory_context)
+                    output = handler.get_output_multiagent(user_input=answer_prompt, temperature=0, max_tokens=2500, system_role="")
+                    ans, output = cleansing_final_output(output)
                         
 
 
@@ -282,6 +325,9 @@ def fully_decode(qid, realqid, question, options, gold_answer, handler, args, da
         'option_valid_memory_citations': option_valid_memory_citations if 'option_valid_memory_citations' in locals() else 0,
         'conflict_detected': conflict_detected if 'conflict_detected' in locals() else False,
         'syn_confidence': syn_confidence if 'syn_confidence' in locals() else 0.5,
+        'arbiter_used': arbiter_used if 'arbiter_used' in locals() else False,
+        'arbiter_memories': arbiter_memories if 'arbiter_memories' in locals() else [],
+        'arbiter_confidence': arbiter_confidence if 'arbiter_confidence' in locals() else 0.0,
     }
     
     return data_info
