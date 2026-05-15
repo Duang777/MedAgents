@@ -4,6 +4,8 @@ from string import punctuation
 import argparse
 import tqdm
 import json
+import os
+import time
 from utils import *
 from memory_bank import CaseBank
 from rule_bank import RuleBank
@@ -12,6 +14,26 @@ from dual_stage_retriever import DualStageRetriever
 
 
 if __name__ == '__main__':
+    def _count_and_fix_jsonl(path):
+        if not os.path.exists(path):
+            return 0
+        valid_lines = []
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                s = line.strip()
+                if not s:
+                    continue
+                try:
+                    json.loads(s)
+                    valid_lines.append(s)
+                except json.JSONDecodeError:
+                    break
+        # Truncate invalid tail for safe resume.
+        with open(path, 'w', encoding='utf-8') as f:
+            for s in valid_lines:
+                f.write(s + '\n')
+        return len(valid_lines)
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_name', default='chatgpt')
     parser.add_argument('--dataset_name', default='MedQA')
@@ -40,6 +62,8 @@ if __name__ == '__main__':
     parser.add_argument('--inner_low_confidence_threshold', type=float, default=0.6)
     parser.add_argument('--enable_arbitration', action='store_true')
     parser.add_argument('--arbitration_confidence_threshold', type=float, default=0.7)
+    parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--overwrite_output', action='store_true')
     args = parser.parse_args()
 
     print(args)
@@ -74,17 +98,35 @@ if __name__ == '__main__':
             confidence_threshold=args.reflection_confidence_threshold,
         )
 
-    ### set test range
-    end_pos = len(dataobj) if args.end_pos == -1 else args.end_pos
-    test_range = range(args.start_pos, end_pos)  # closed interval
-
     ### set output_file_name
     exact_output_file = f"{args.output_files_folder}/{args.model_name}-{args.method}"
-    #print(exact_output_file)
+    os.makedirs(args.output_files_folder, exist_ok=True)
+
+    if args.overwrite_output and os.path.exists(exact_output_file):
+        os.remove(exact_output_file)
+
+    resumed_count = 0
+    if args.resume:
+        resumed_count = _count_and_fix_jsonl(exact_output_file)
+
+    ### set test range
+    end_pos = len(dataobj) if args.end_pos == -1 else args.end_pos
+    effective_start = args.start_pos + resumed_count
+    if effective_start > end_pos:
+        effective_start = end_pos
+    test_range = range(effective_start, end_pos)
+    print(
+        f"Run range: {args.start_pos}~{end_pos}, resume={args.resume}, "
+        f"resumed_count={resumed_count}, effective_start={effective_start}"
+    )
 
 
     input_prompt = {}
-    for idx in tqdm.tqdm(test_range, desc=f"{args.start_pos} ~ {end_pos}"):
+    running_total = 0
+    running_correct = 0
+    wall_start = time.time()
+    pbar = tqdm.tqdm(test_range, desc=f"{effective_start} ~ {end_pos}")
+    for idx in pbar:
         raw_sample = dataobj.get_by_idx(idx)
         question = raw_sample['question'] if raw_sample['question'][-1] in punctuation else raw_sample['question'] + '?'
         memory_context = ""
@@ -172,3 +214,17 @@ if __name__ == '__main__':
         record = json.dumps(data_info)
         with open(exact_output_file, 'a') as f:
             f.write(record + '\n')
+
+        running_total += 1
+        if data_info['pred_answer'] == gold_answer:
+            running_correct += 1
+        running_acc = running_correct / running_total if running_total else 0.0
+        elapsed = time.time() - wall_start
+        avg_sec = elapsed / running_total if running_total else 0.0
+        remain = len(test_range) - running_total
+        eta_sec = int(avg_sec * max(0, remain))
+        pbar.set_postfix({
+            "acc": f"{running_acc:.4f}",
+            "eta_sec": eta_sec,
+            "done": running_total
+        })

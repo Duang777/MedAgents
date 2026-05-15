@@ -1,6 +1,7 @@
 from prompt_generator import *
 from data_utils import *
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 
 
@@ -130,23 +131,24 @@ def fully_decode(qid, realqid, question, options, gold_answer, handler, args, da
         options_domains = raw_option_domain.split(":")[-1].strip().split(" | ")
 
         # get question analysis
-        tmp_question_analysis = []
+        tmp_question_analysis = [""] * len(question_domains)
         question_memory_citations = 0
         question_valid_memory_citations = 0
         memory_candidates = memory_candidates_from_brief(memory_context) if args.enable_inner_enhancement else []
-        for _domain in question_domains:
-            question_analyzer, prompt_get_question_analysis = get_question_analysis_prompt(
-                question, _domain, memory_brief=memory_context if args.enable_inner_enhancement else ""
+
+        def _run_question(domain, pos):
+            analyzer, prompt = get_question_analysis_prompt(
+                question, domain, memory_brief=memory_context if args.enable_inner_enhancement else ""
             )
-            raw_question_analysis = handler.get_output_multiagent(user_input=prompt_get_question_analysis, temperature=0, max_tokens=300, system_role=question_analyzer)
+            raw = handler.get_output_multiagent(user_input=prompt, temperature=0, max_tokens=300, system_role=analyzer)
             if args.enable_inner_enhancement:
-                parsed_analysis, refs = parse_analysis_json(raw_question_analysis)
+                parsed, refs = parse_analysis_json(raw)
                 if memory_candidates and len(refs) == 0:
                     repair_prompt = (
                         "Reformat the following analysis into strict JSON and add at least one relevant "
                         "memory reference from the provided candidates when possible.\n\n"
                         f"Candidates: {memory_candidates}\n"
-                        f"Analysis text:\n{raw_question_analysis}\n\n"
+                        f"Analysis text:\n{raw}\n\n"
                         "Output JSON only:\n"
                         "{\"analysis\":\"...\", \"memory_references\":[\"Case Memory 1\"]}"
                     )
@@ -155,34 +157,39 @@ def fully_decode(qid, realqid, question, options, gold_answer, handler, args, da
                     )
                     repaired_analysis, repaired_refs = parse_analysis_json(repaired)
                     if repaired_refs:
-                        parsed_analysis, refs = repaired_analysis, repaired_refs
-                question_memory_citations += len(refs)
-                question_valid_memory_citations += count_valid_refs(refs, memory_candidates)
-                tmp_question_analysis.append(parsed_analysis)
-            else:
-                question_memory_citations += count_memory_citations(raw_question_analysis)
-                tmp_question_analysis.append(raw_question_analysis)
+                        parsed, refs = repaired_analysis, repaired_refs
+                return pos, parsed, len(refs), count_valid_refs(refs, memory_candidates)
+            return pos, raw, count_memory_citations(raw), 0
+
+        with ThreadPoolExecutor(max_workers=max(1, len(question_domains))) as ex:
+            futures = [ex.submit(_run_question, d, i) for i, d in enumerate(question_domains)]
+            for f in futures:
+                pos, parsed_text, cite_cnt, valid_cnt = f.result()
+                tmp_question_analysis[pos] = parsed_text
+                question_memory_citations += cite_cnt
+                question_valid_memory_citations += valid_cnt
         question_analyses = cleansing_analysis(tmp_question_analysis, question_domains, 'question')
 
         # get option analysis
-        tmp_option_analysis = []
+        tmp_option_analysis = [""] * len(options_domains)
         option_memory_citations = 0
         option_valid_memory_citations = 0
         memory_candidates = memory_candidates_from_brief(memory_context) if args.enable_inner_enhancement else []
-        for _domain in options_domains:
-            option_analyzer, prompt_get_options_analyses = get_options_analysis_prompt(
-                question, options, _domain, question_analyses,
+
+        def _run_option(domain, pos):
+            analyzer, prompt = get_options_analysis_prompt(
+                question, options, domain, question_analyses,
                 memory_brief=memory_context if args.enable_inner_enhancement else ""
             )
-            raw_option_analysis = handler.get_output_multiagent(user_input=prompt_get_options_analyses, temperature=0, max_tokens=300, system_role=option_analyzer)
+            raw = handler.get_output_multiagent(user_input=prompt, temperature=0, max_tokens=300, system_role=analyzer)
             if args.enable_inner_enhancement:
-                parsed_analysis, refs = parse_analysis_json(raw_option_analysis)
+                parsed, refs = parse_analysis_json(raw)
                 if memory_candidates and len(refs) == 0:
                     repair_prompt = (
                         "Reformat the following analysis into strict JSON and add at least one relevant "
                         "memory reference from the provided candidates when possible.\n\n"
                         f"Candidates: {memory_candidates}\n"
-                        f"Analysis text:\n{raw_option_analysis}\n\n"
+                        f"Analysis text:\n{raw}\n\n"
                         "Output JSON only:\n"
                         "{\"analysis\":\"...\", \"memory_references\":[\"Case Memory 1\"]}"
                     )
@@ -191,13 +198,17 @@ def fully_decode(qid, realqid, question, options, gold_answer, handler, args, da
                     )
                     repaired_analysis, repaired_refs = parse_analysis_json(repaired)
                     if repaired_refs:
-                        parsed_analysis, refs = repaired_analysis, repaired_refs
-                option_memory_citations += len(refs)
-                option_valid_memory_citations += count_valid_refs(refs, memory_candidates)
-                tmp_option_analysis.append(parsed_analysis)
-            else:
-                option_memory_citations += count_memory_citations(raw_option_analysis)
-                tmp_option_analysis.append(raw_option_analysis)
+                        parsed, refs = repaired_analysis, repaired_refs
+                return pos, parsed, len(refs), count_valid_refs(refs, memory_candidates)
+            return pos, raw, count_memory_citations(raw), 0
+
+        with ThreadPoolExecutor(max_workers=max(1, len(options_domains))) as ex:
+            futures = [ex.submit(_run_option, d, i) for i, d in enumerate(options_domains)]
+            for f in futures:
+                pos, parsed_text, cite_cnt, valid_cnt = f.result()
+                tmp_option_analysis[pos] = parsed_text
+                option_memory_citations += cite_cnt
+                option_valid_memory_citations += valid_cnt
         option_analyses = cleansing_analysis(tmp_option_analysis, options_domains, 'option')
 
         if args.method == "anal_only":

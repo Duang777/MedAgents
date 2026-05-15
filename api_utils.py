@@ -21,7 +21,6 @@ else:
     openai.api_type = "open_ai"
 
 
-@timeout(200) # 200 seconds timeout
 def generate_response_multiagent(engine, temperature, max_tokens, frequency_penalty, presence_penalty, stop, system_role, user_input):
     print("Generating response for engine: ", engine)
     start_time = time.time()
@@ -98,6 +97,7 @@ def generate_response_ins(engine, temperature, max_tokens, frequency_penalty, pr
 class api_handler:
     def __init__(self, model):
         self.model = model
+        self.embedding_cache = {}
 
         if self.model == 'instructgpt':
             self.engine = 'text-davinci-002'
@@ -140,6 +140,8 @@ class api_handler:
                     return "ERROR."
 
     def get_embedding(self, text):
+        if text in self.embedding_cache:
+            return self.embedding_cache[text]
         max_attempts = 3
         for attempt in range(max_attempts):
             try:
@@ -153,7 +155,9 @@ class api_handler:
                         model=OPENAI_EMBEDDING_MODEL,
                         input=text,
                     )
-                return response["data"][0]["embedding"]
+                emb = response["data"][0]["embedding"]
+                self.embedding_cache[text] = emb
+                return emb
             except (TimeoutError, openai.error.Timeout, Exception) as error:
                 print(f'Embedding attempt {attempt+1} of {max_attempts} failed with error: {error}')
                 if attempt == max_attempts - 1:
